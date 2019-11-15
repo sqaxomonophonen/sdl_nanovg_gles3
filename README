@@ -1,0 +1,3 @@
+Build nanovg, then:
+$ ln -s /path/to/nanovg nanovg
+$ make
