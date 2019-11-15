@@ -218,6 +218,20 @@ int main(int argc, char** argv)
 			nvgRestore(vg);
 		}
 
+		nvgSave(vg);
+		nvgBeginPath(vg);
+		const float spacing = 10.0f;
+		for (float y = -50; y < screen_height; y+=spacing) {
+			float dy = fmodf(phi*8.0f, spacing);
+			nvgMoveTo(vg, 1000, y + dy);
+			nvgLineTo(vg, 1200, y+20 + dy);
+			nvgLineTo(vg, 1400, y + dy);
+		}
+		nvgStrokeWidth(vg, 2.5f);
+		nvgStrokeColor(vg, nvgRGBA(255,255,0,255));
+		nvgStroke(vg);
+		nvgRestore(vg);
+
 		{
 			char buf[100];
 			stbsp_snprintf(buf, sizeof buf, "%.1f fps", fps);
