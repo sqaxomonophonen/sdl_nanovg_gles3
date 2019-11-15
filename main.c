@@ -56,6 +56,8 @@ static void star(NVGcontext* vg, int n_teeth, float r1, float r2)
 	nvgClosePath(vg);
 }
 
+#include "drawing.inc.h"
+
 int main(int argc, char** argv)
 {
 	assert(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) == 0);
@@ -244,6 +246,21 @@ int main(int argc, char** argv)
 			nvgText(vg, 2, 2, buf, NULL);
 			nvgFillColor(vg, nvgRGBA(255,255,255,255));
 			nvgText(vg, 0, 0, buf, NULL);
+			nvgRestore(vg);
+		}
+
+		{
+			nvgSave(vg);
+			nvgTranslate(vg, 500, 500);
+			nvgScale(vg, 10, 10);
+			nvgRotate(vg, phi*0.1f);
+			nvgTranslate(vg, -15, -30);
+			emit_drawing(vg);
+			nvgStrokeWidth(vg, .25f);
+			nvgStrokeColor(vg, nvgRGBA(255,255,255,255));
+			nvgStroke(vg);
+			nvgFillColor(vg, nvgRGBA(0,0,0,100));
+			nvgFill(vg);
 			nvgRestore(vg);
 		}
 

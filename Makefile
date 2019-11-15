@@ -12,11 +12,11 @@ svg2nvg: svg2nvg.o
 drawing.inc.h: drawing.svg svg2nvg
 	./svg2nvg $< $@
 
-main.o: main.c
+main.o: main.c drawing.inc.h
 	$(CC) $(CFLAGS) $(shell pkg-config --cflags $(PKGS)) -Inanovg/src -c $<
 
 main: main.o
 	$(CC) $^ -o $@ -Lnanovg/build -lnanovg -lm $(shell pkg-config --libs $(PKGS))
 
 clean:
-	rm -f *.o main *.inc.h
+	rm -f *.o main svg2nvg *.inc.h

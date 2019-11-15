@@ -3,4 +3,5 @@ svg2nvg
 nanovg
 yxml
 .*.swp
+*.inc.h
 *.o
