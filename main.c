@@ -74,7 +74,6 @@ int main(int argc, char** argv)
 				SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
 		assert(window);
 		assert(glctx = SDL_GL_CreateContext(window));
-		SDL_GL_SetSwapInterval(0);
 	}
 
 	NVGcontext* vg = nvgCreateGLES3(NVG_ANTIALIAS | NVG_STENCIL_STROKES | NVG_DEBUG);
@@ -89,10 +88,14 @@ int main(int argc, char** argv)
 	int screen_height = 0;
 	window_size(&screen_width, &screen_height);
 
+	int swap_interval = 1;
+	SDL_GL_SetSwapInterval(1);
+
 	float phi = 0.0f;
 	int exiting = 0;
 	float fps = 0.0f;
 	int fps_counter = 0;
+	int fullscreen = 0;
 	Uint32 last_ticks = 0;
 	while (!exiting) {
 		SDL_Event e;
@@ -102,6 +105,13 @@ int main(int argc, char** argv)
 			} else if (e.type == SDL_KEYDOWN) {
 				if (e.key.keysym.sym == SDLK_ESCAPE) {
 					exiting = 1;
+				} else if (e.key.keysym.sym == SDLK_SPACE) {
+					swap_interval ^= 1;
+					SDL_GL_SetSwapInterval(swap_interval);
+				} else if (e.key.keysym.sym == SDLK_f) {
+					fullscreen = !fullscreen;
+					//SDL_SetWindowFullscreen(window, fullscreen ? SDL_WINDOW_FULLSCREEN : 0);
+					SDL_SetWindowFullscreen(window, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
 				}
 			} else if (e.type == SDL_WINDOWEVENT) {
 				if (e.window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -121,11 +131,12 @@ int main(int argc, char** argv)
 
 		nvgBeginFrame(vg, screen_width, screen_height, 1.0f);
 
+		phi += 0.1f;
+
 		{
 			nvgSave(vg);
 
 			nvgRotate(vg, sinf(phi) * 0.02f);
-			phi += 0.1f;
 
 			nvgFontSize(vg, 100.0f);
 			nvgTextAlign(vg, NVG_ALIGN_LEFT|NVG_ALIGN_MIDDLE);
@@ -163,7 +174,6 @@ int main(int argc, char** argv)
 			nvgRestore(vg);
 		}
 		#endif
-
 
 		{
 			nvgSave(vg);
