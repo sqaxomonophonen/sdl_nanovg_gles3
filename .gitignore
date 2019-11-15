@@ -1,4 +1,6 @@
 main
+svg2nvg
 nanovg
+yxml
 .*.swp
 *.o

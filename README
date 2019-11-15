@@ -1,3 +1,7 @@
 Build nanovg, then:
-$ ln -s /path/to/nanovg nanovg
+$ ln -s /path/to/nanovg/ nanovg
+
+Build yxml, then:
+$ ln -s /path/to/yxml/ yxml
+
 $ make
