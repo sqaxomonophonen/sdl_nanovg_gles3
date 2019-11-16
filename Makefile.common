@@ -1,6 +1,6 @@
 CFLAGS=-Wall -std=c99 $(BUILD)
 
-all: main
+all: main main2
 
 svg2nvg.o: svg2nvg.c
 	$(CC) $(CFLAGS) -Iyxml -c $<
@@ -20,8 +20,15 @@ stb_sprintf.o: stb_sprintf.c
 main.o: main.c drawing.inc.h
 	$(CC) $(CFLAGS) $(CFLAGS_GL) $(CFLAGS_SDL2) -Inanovg/src -c $<
 
+main2.o: main2.c
+	$(CC) $(CFLAGS) $(CFLAGS_GL) $(CFLAGS_SDL2) -Inanovg/src -c $<
+
 main: main.o nanovg_gl.o stb_sprintf.o
 	$(CC) $^ -o $@ -Lnanovg/build -lnanovg -lm $(LINK_GL) $(LINK_SDL2)
 
+main2: main2.o nanovg_gl.o stb_sprintf.o
+	$(CC) $^ -o $@ -Lnanovg/build -lnanovg -lm $(LINK_GL) $(LINK_SDL2)
+
+
 clean:
-	rm -f *.o main svg2nvg *.inc.h
+	rm -f *.o main main2 svg2nvg *.inc.h
