@@ -106,7 +106,7 @@ static void guy_step(struct guy* guy)
 		float dy = guy->lookat_y - guy->y;
 		float dsqr = dx*dx + dy*dy;
 		const float dmax = 100.0f;
-		if (dsqr < dmax*dmax) {
+		if (dsqr > 0 && dsqr < dmax*dmax) {
 			float d = sqrtf(dsqr);
 			float udx = dx / d;
 			float udy = dy / d;
