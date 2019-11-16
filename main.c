@@ -3,21 +3,13 @@
 
 #include <SDL.h>
 
-// XXX linux specific
-#define GL_GLEXT_PROTOTYPES
-#include <GL/gl.h>
-
+#include "gl.h"
 #include "nanovg.h"
-#define NANOVG_GLES3_IMPLEMENTATION
-#include "nanovg_gl.h"
-#include "nanovg_gl_utils.h"
-
-
-#define STB_SPRINTF_IMPLEMENTATION
 #include "stb_sprintf.h"
 
-
 SDL_Window* window;
+
+NVGcontext* nanovg_create_context();
 
 static void window_size(int* width, int* height)
 {
@@ -78,7 +70,7 @@ int main(int argc, char** argv)
 		assert(glctx = SDL_GL_CreateContext(window));
 	}
 
-	NVGcontext* vg = nvgCreateGLES3(NVG_ANTIALIAS | NVG_STENCIL_STROKES | NVG_DEBUG);
+	NVGcontext* vg = nanovg_create_context();
 	assert(vg != NULL);
 
 	int font = nvgCreateFont(vg, "sans", "./nanovg/example/Roboto-Regular.ttf");
