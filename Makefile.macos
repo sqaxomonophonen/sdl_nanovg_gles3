@@ -1,0 +1,6 @@
+BUILD=-DBUILD_MACOS
+#CFLAGS_GL=
+CFLAGS_SDL2=-I/Library/Frameworks/SDL2.framework/Headers
+LINK_GL=-framework OpenGL
+LINK_SDL2=-F/Library/Frameworks -framework SDL2
+include Makefile.common

@@ -1,4 +1,4 @@
-CFLAGS=-Wall -std=c99
+CFLAGS=-Wall -std=c99 $(BUILD)
 
 all: main
 
@@ -12,16 +12,16 @@ drawing.inc.h: drawing.svg svg2nvg
 	./svg2nvg $< $@
 
 nanovg_gl.o: nanovg_gl.c
-	$(CC) $(CFLAGS) $(shell pkg-config --cflags gl) -Inanovg/src -c $<
+	$(CC) $(CFLAGS) $(CFLAGS_GL) -Inanovg/src -c $<
 
 stb_sprintf.o: stb_sprintf.c
 	$(CC) $(CFLAGS) -c $<
 
 main.o: main.c drawing.inc.h
-	$(CC) $(CFLAGS) $(shell pkg-config --cflags gl sdl2) -Inanovg/src -c $<
+	$(CC) $(CFLAGS) $(CFLAGS_GL) $(CFLAGS_SDL2) -Inanovg/src -c $<
 
 main: main.o nanovg_gl.o stb_sprintf.o
-	$(CC) $^ -o $@ -Lnanovg/build -lnanovg -lm $(shell pkg-config --libs gl sdl2)
+	$(CC) $^ -o $@ -Lnanovg/build -lnanovg -lm $(LINK_GL) $(LINK_SDL2)
 
 clean:
 	rm -f *.o main svg2nvg *.inc.h

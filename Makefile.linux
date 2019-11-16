@@ -1,0 +1,6 @@
+BUILD=-DBUILD_LINUX
+CFLAGS_GL=$(shell pkg-config --cflags gl)
+CFLAGS_SDL2=$(shell pkg-config --cflags sdl2)
+LINK_GL=$(shell pkg-config --libs gl)
+LINK_SDL2=$(shell pkg-config --libs sdl2)
+include Makefile.common

@@ -11,14 +11,18 @@ SDL_Window* window;
 
 NVGcontext* nanovg_create_context();
 
-static void window_size(int* width, int* height)
+static void window_size(int* width, int* height, float* pixel_ratio)
 {
 	int prev_width = *width;
 	int prev_height = *height;
 	SDL_GL_GetDrawableSize(window, width, height);
-	if ((*width != prev_width || *height != prev_height) && prev_width > 0 && prev_height > 0) {
+	if ((*width != prev_width || *height != prev_height)) {
 		printf("%d×%d -> %d×%d\n", prev_width, prev_height, *width, *height);
 	}
+
+	int w, h;
+	SDL_GetWindowSize(window, &w, &h);
+	*pixel_ratio = *width / w;
 }
 
 static void star(NVGcontext* vg, int n_teeth, float r1, float r2)
@@ -57,17 +61,34 @@ int main(int argc, char** argv)
 
 	SDL_GLContext glctx;
 	{
+		#ifdef BUILD_LINUX
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+		#elif BUILD_MACOS
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+		#else
+		#error "missing BUILD_* define"
+		#endif
+
+		SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 1);
 
 		window = SDL_CreateWindow(
 				"SDL2/NanoVG/GLES3",
 				SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
 				1920, 1080,
 				SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI);
-		assert(window);
-		assert(glctx = SDL_GL_CreateContext(window));
+		if (window == NULL) {
+			fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+			abort();
+		}
+		glctx = SDL_GL_CreateContext(window);
+		if (!glctx) {
+			fprintf(stderr, "SDL_GL_CreateContextfailed: %s\n", SDL_GetError());
+			abort();
+		}
 	}
 
 	NVGcontext* vg = nanovg_create_context();
@@ -80,7 +101,8 @@ int main(int argc, char** argv)
 
 	int screen_width = 0;
 	int screen_height = 0;
-	window_size(&screen_width, &screen_height);
+	float pixel_ratio = 0.0f;
+	window_size(&screen_width, &screen_height, &pixel_ratio);
 
 	int swap_interval = 1;
 	SDL_GL_SetSwapInterval(1);
@@ -109,21 +131,21 @@ int main(int argc, char** argv)
 				}
 			} else if (e.type == SDL_WINDOWEVENT) {
 				if (e.window.event == SDL_WINDOWEVENT_RESIZED) {
-					window_size(&screen_width, &screen_height);
+					window_size(&screen_width, &screen_height, &pixel_ratio);
 				}
 			}
 		}
 
 		glViewport(0, 0, screen_width, screen_height);
 		glClearColor(0, 0.1, 0.4, 0);
-		glClear(GL_COLOR_BUFFER_BIT);
+		glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 		glEnable(GL_CULL_FACE);
 		glDisable(GL_DEPTH_TEST);
 
-		nvgBeginFrame(vg, screen_width, screen_height, 1.0f);
+		nvgBeginFrame(vg, screen_width / pixel_ratio, screen_height / pixel_ratio, pixel_ratio);
 
 		phi += 0.1f;
 
@@ -248,11 +270,11 @@ int main(int argc, char** argv)
 			nvgRotate(vg, phi*0.1f);
 			nvgTranslate(vg, -15, -30);
 			emit_drawing(vg);
+			nvgFillColor(vg, nvgRGBA(0,0,0,100));
+			nvgFill(vg);
 			nvgStrokeWidth(vg, .25f);
 			nvgStrokeColor(vg, nvgRGBA(255,255,255,255));
 			nvgStroke(vg);
-			nvgFillColor(vg, nvgRGBA(0,0,0,100));
-			nvgFill(vg);
 			nvgRestore(vg);
 		}
 
