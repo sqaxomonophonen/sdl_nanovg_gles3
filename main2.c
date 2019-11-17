@@ -26,6 +26,233 @@ static void window_size(int* width, int* height, float* pixel_ratio)
 	*pixel_ratio = *width / w;
 }
 
+union v3 {
+	struct { float x,y,z; };
+	float s[3];
+};
+
+union v3 v3_sub(union v3 a, union v3 b)
+{
+	union v3 r;
+	for (int i = 0; i < 3; i++) r.s[i] = a.s[i] - b.s[i];
+	return r;
+}
+
+float v3_dot(union v3 a, union v3 b)
+{
+	float sum = 0.0f;
+	for (int i = 0; i < 3; i++) sum += a.s[i]*b.s[i];
+	return sum;
+}
+
+union v3 v3_cross_product(union v3 b, union v3 c)
+{
+	union v3 a;
+	a.x = b.y*c.z - b.z*c.y;
+	a.y = b.z*c.x - b.x*c.z;
+	a.z = b.x*c.y - b.y*c.x;
+	return a;
+}
+
+union m33 {
+	float s[9];
+	union v3 b[3];
+};
+
+union v3 m33_get_view_v3(union m33* m)
+{
+	/* XXX or do I need the inverse of m? */
+	return m->b[0];
+}
+
+union v3 m33_apply(union m33* m, union v3 v)
+{
+	// XXX TODO
+	return v;
+}
+
+struct outline {
+	int n_vertices;
+	union v3* vertices;
+
+	int n_polygons;
+	int* polygon_materials;
+	int* polygon_lookup; // (polygon_vertex_indices offset, n) pairs
+	int* polygon_vertex_indices;
+
+	// derived
+	union v3* polygon_normals;
+	int n_edges;
+	int* edge_vertex_pairs;
+	int* edge_polygon_pairs;
+	int* vertex_edge_lookup; // (vertex_edges offset, n) pairs
+	int* vertex_edges;
+
+	// temporary
+	int* polygon_tags;
+
+};
+
+static int edge_vertex_pair_compar(const void* va, const void* vb)
+{
+	const int* a = va;
+	const int* b = vb;
+	if (a[0] != b[0]) {
+		return a[0] - b[0];
+	} else {
+		return a[1] - b[1];
+	}
+}
+
+static void outline_prep(struct outline* o)
+{
+	/* prep normals */
+	assert((o->polygon_normals = calloc(o->n_polygons, sizeof *o->polygon_normals)) != NULL);
+	const int n_polygons = o->n_polygons;
+	int n_max_edges = 0;
+	for (int i = 0; i < n_polygons; i++) {
+		int offset = o->polygon_lookup[(i<<1)];
+		int n_vertices = o->polygon_lookup[(i<<1)+1];
+		assert(n_vertices >= 3);
+		union v3 v0 = o->vertices[o->polygon_vertex_indices[offset]];
+		union v3 v1 = o->vertices[o->polygon_vertex_indices[offset+1]];
+		union v3 v2 = o->vertices[o->polygon_vertex_indices[offset+2]];
+		o->polygon_normals[i] = v3_cross_product(v3_sub(v1, v0), v3_sub(v2, v0));
+		n_max_edges += n_vertices;
+	}
+
+	/* temporary stuff */
+	assert((o->polygon_tags = calloc(o->n_polygons, sizeof *o->polygon_tags)) != NULL);
+
+
+	/* find all edge pairs; sort to eliminate duplicates; remaining are
+	 * unique edges */
+	assert((o->edge_vertex_pairs = calloc(n_max_edges, 2*sizeof(*o->edge_vertex_pairs))) != NULL);
+	int evpi = 0;
+	for (int i = 0; i < n_polygons; i++) {
+		int offset = o->polygon_lookup[(i<<1)];
+		int n_vertices = o->polygon_lookup[(i<<1)+1];
+
+		int prev = n_vertices - 1;
+		for (int j = 0; j < n_vertices; j++) {
+			int va = o->polygon_vertex_indices[offset + prev];
+			int vb = o->polygon_vertex_indices[offset + j];
+			prev = j;
+
+			o->edge_vertex_pairs[evpi++] = va;
+			o->edge_vertex_pairs[evpi++] = vb;
+		}
+	}
+	qsort(o->edge_vertex_pairs, n_max_edges, 2*sizeof(*o->edge_vertex_pairs), edge_vertex_pair_compar);
+	int n_edges = 0;
+	int* prev = NULL;
+	int* cur = o->edge_vertex_pairs;
+	int* wr = o->edge_vertex_pairs;
+	for (int i = 0; i < n_max_edges; i++) {
+		const size_t sz = 2*sizeof(int);
+		if (prev == NULL || memcmp(prev, cur, sz) != 0) {
+			if (wr != cur) memcpy(wr, cur, sz);
+			n_edges++;
+			wr += 2;
+		}
+		prev = cur;
+		cur += 2;
+	}
+	o->n_edges = n_edges;
+
+	// TODO int* edge_polygon_pairs;
+	// TODO int* vertex_edge_lookup; // (vertex_edges offset, n) pairs
+	// TODO int* vertex_edges;
+}
+
+static inline int outline__must_draw_edge(struct outline* o, int edge_index)
+{
+	int tag_a = 0;
+	int tag_b = 0;
+
+	int polygon_a = o->edge_polygon_pairs[edge_index<<1];
+	int polygon_b = o->edge_polygon_pairs[(edge_index<<1)+1];
+	if (polygon_a >= 0) {
+		tag_a = o->polygon_tags[polygon_a];
+	}
+	if (polygon_b >= 0) {
+		tag_b = o->polygon_tags[polygon_b];
+	}
+
+	return tag_a != tag_b;
+}
+
+static inline int outline__next_edge(struct outline* o, int edge_index, int direction)
+{
+	int v = o->edge_vertex_pairs[(edge_index<<1) + direction];
+
+	int* lookup = &o->vertex_edge_lookup[v<<1];
+	int offset = lookup[0];
+	int n = lookup[1];
+
+	for (int index = offset; index < offset+n; index++) {
+		int next_edge_index = o->vertex_edges[index];
+		if (next_edge_index == edge_index) continue;
+		if (outline__must_draw_edge(o, next_edge_index)) return next_edge_index;
+	}
+	return -1;
+}
+
+static int outline_draw(struct outline* o, NVGcontext* vg, union m33* tx, int draw_material)
+{
+	union v3 view = m33_get_view_v3(tx);
+
+	const int n_polygons = o->n_polygons;
+	int n_tags = 0;
+	for (int i = 0; i < n_polygons; i++) {
+		int tag = 0;
+		if (o->polygon_materials[i] == draw_material) {
+			tag = v3_dot(view, o->polygon_normals[i]) > 0.0f;
+			if (tag) n_tags++;
+		}
+		o->polygon_tags[i] = tag;
+	}
+
+	if (n_tags == 0) return 0; /* nothing to draw */
+
+	const int n_edges = o->n_edges;
+	int first_edge_index = -1;
+	int direction = 0; // XXX set? CW/CCW?
+	for (int i = 0; i < n_edges; i++) {
+		if (outline__must_draw_edge(o, i)) {
+			first_edge_index = i;
+			break;
+		}
+	}
+
+	assert(first_edge_index > -1);
+
+	int edge_index = first_edge_index;
+	int moveto = 1;
+	nvgBeginPath(vg);
+	do {
+		union v3 v;
+		if (moveto) {
+			v = o->vertices[o->edge_vertex_pairs[(edge_index<<1) + (direction^1)]];
+			v = m33_apply(tx, v);
+			nvgMoveTo(vg, v.x, v.y);
+			moveto = 0;
+		}
+
+		v = o->vertices[o->edge_vertex_pairs[(edge_index<<1) + direction]];
+		v = m33_apply(tx, v);
+		nvgLineTo(vg, v.x, v.y);
+
+		edge_index = outline__next_edge(o, first_edge_index, direction);
+	} while (edge_index != first_edge_index);
+	nvgClosePath(vg);
+
+	return 1;
+}
+
+
+
+
 struct guy {
 	float eye_r;
 	float eye_spacing;
@@ -278,6 +505,7 @@ int main(int argc, char** argv)
 	int fullscreen = 0;
 	Uint32 last_ticks = 0;
 
+	float x = 0.0f;
 	while (!exiting) {
 		SDL_Event e;
 		while (SDL_PollEvent(&e)) {
@@ -320,6 +548,27 @@ int main(int argc, char** argv)
 		guy_draw(&guy, vg);
 
 		{
+			nvgSave(vg);
+			nvgTranslate(vg, 150, 150);
+			nvgRotate(vg, x);
+			nvgTranslate(vg, -150, -150);
+			nvgBeginPath(vg);
+			nvgMoveTo(vg, 100, 100);
+			nvgLineTo(vg, 100, 200);
+			nvgLineTo(vg, 200, 200);
+			nvgLineTo(vg, 80, 120);
+			nvgLineTo(vg, 160, 190);
+			nvgLineTo(vg, 110, 190);
+			nvgClosePath(vg);
+			nvgFillColor(vg, nvgRGBA(255,255,255,100));
+			nvgFill(vg);
+			//nvgStrokeColor(vg, nvgRGBA(0,0,0,255));
+			//nvgStrokeWidth(vg, 1);
+			//nvgStroke(vg);
+			nvgRestore(vg);
+		}
+
+		{
 			char buf[100];
 			stbsp_snprintf(buf, sizeof buf, "%.1f fps", fps);
 
@@ -345,6 +594,8 @@ int main(int argc, char** argv)
 			last_ticks = ticks;
 			fps_counter = 0;
 		}
+
+		x += 0.01f;
 	}
 
 	SDL_GL_DeleteContext(glctx);
