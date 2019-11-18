@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+#include <math.h>
 
 #include <SDL.h>
 
@@ -31,6 +32,26 @@ union v3 {
 	float s[3];
 };
 
+void v3_dump(union v3 v)
+{
+	printf("[%.3f %.3f %.3f]\n", v.x, v.y, v.z);
+}
+
+union v3 v3_axis_x()
+{
+	return (union v3){.x=1};
+}
+
+union v3 v3_axis_y()
+{
+	return (union v3){.y=1};
+}
+
+union v3 v3_axis_z()
+{
+	return (union v3){.z=1};
+}
+
 union v3 v3_sub(union v3 a, union v3 b)
 {
 	union v3 r;
@@ -45,6 +66,22 @@ float v3_dot(union v3 a, union v3 b)
 	return sum;
 }
 
+float v3_length(union v3 v)
+{
+	return sqrtf(v3_dot(v, v));
+}
+
+union v3 v3_scale(union v3 v, float scalar)
+{
+	for (int i = 0; i < 3; i++) v.s[i] *= scalar;
+	return v;
+}
+
+union v3 v3_normalize(union v3 v)
+{
+	return v3_scale(v, 1.0f / v3_length(v));
+}
+
 union v3 v3_cross_product(union v3 b, union v3 c)
 {
 	union v3 a;
@@ -57,53 +94,129 @@ union v3 v3_cross_product(union v3 b, union v3 c)
 union m33 {
 	float s[9];
 	union v3 b[3];
+	struct {
+		union v3 basis_x;
+		union v3 basis_y;
+		union v3 basis_z;
+	};
 };
+
+union v3 m33_row(union m33* m, int row)
+{
+	return m->b[row];
+}
+
+union v3 m33_col(union m33* m, int col)
+{
+	union v3 r;
+	for (int i = 0; i < 3; i++) {
+		r.s[i] = m->b[i].s[col];
+	}
+	return r;
+}
 
 union v3 m33_get_view_v3(union m33* m)
 {
 	/* XXX or do I need the inverse of m? */
-	return m->b[0];
+	return m->basis_z;
 }
 
 union v3 m33_apply(union m33* m, union v3 v)
 {
-	// XXX TODO
-	return v;
+	union v3 r;
+	for (int i = 0; i < 3; i++) r.s[i] = v3_dot(v, m33_row(m, i));
+	return r;
 }
 
+void m33_set_identity(union m33* m)
+{
+	for (int i = 0; i < 3; i++) {
+		for (int j = 0; j < 3; j++) {
+			m->b[i].s[j] = (i == j) ? 1.0f : 0.0f;
+		}
+	}
+}
+
+void m33_set_rotate(union m33* m, float radians, union v3 axis)
+{
+	axis = v3_normalize(axis);
+	float c = cosf(radians);
+	float s = sinf(radians);
+	for (int i = 0; i < 3; i++) {
+		for (int j = 0; j < 3; j++) {
+			float x = axis.s[i] * axis.s[j] * (1-c);
+			if (i == j) {
+				x += c;
+			} else {
+				int k = 3-i-j;
+				assert(k >= 0 && k < 3);
+				float sgn0 = (i-j)&1 ? 1 : -1;
+				float sgn1 = (i-j)>0 ? 1 : -1;
+				x += axis.s[k] * s * sgn0 * sgn1;
+			}
+			m->b[i].s[j] = x;
+		}
+	}
+}
+
+void m33_multiply(union m33* dst, union m33* a, union m33* b)
+{
+	for (int i = 0; i < 3; i++) {
+		for (int j = 0; j < 3; j++) {
+			dst->b[i].s[j] = v3_dot(m33_row(a, i), m33_col(b, j));
+		}
+	}
+}
+
+void m33_multiply_inplace(union m33* dst, union m33* m)
+{
+	union m33 result;
+	m33_multiply(&result, dst, m);
+	memcpy(dst, &result, sizeof result);
+}
+
+
+union ipair {
+	struct { int a,b; };
+	struct { int offset,length; };
+	int i[2];
+};
+
 struct outline {
+	// specified
 	int n_vertices;
 	union v3* vertices;
 
 	int n_polygons;
 	int* polygon_materials;
-	int* polygon_lookup; // (polygon_vertex_indices offset, n) pairs
+	union ipair* polygon_lookup;
 	int* polygon_vertex_indices;
 
 	// derived
 	union v3* polygon_normals;
 	int n_edges;
-	int* edge_vertex_pairs;
-	int* edge_polygon_pairs;
-	int* vertex_edge_lookup; // (vertex_edges offset, n) pairs
+	union ipair* edge_vertex_pairs;
+	union ipair* edge_polygon_pairs;
+	union ipair* vertex_edge_lookup;
 	int* vertex_edges;
 
 	// temporary
 	int* polygon_tags;
-
 };
 
-static int edge_vertex_pair_compar(const void* va, const void* vb)
+static int edge_vertex_pair_compar(const void* vx, const void* vy)
 {
-	const int* a = va;
-	const int* b = vb;
-	if (a[0] != b[0]) {
-		return a[0] - b[0];
+	const union ipair* x = vx;
+	const union ipair* y = vy;
+	if (x->a != y->a) {
+		return x->a - y->a;
 	} else {
-		return a[1] - b[1];
+		return x->b - y->b;
 	}
 }
 
+/* calculates everything in the "derived" section of struct outline, from the
+ * "specified" section, and also initializes "temporary" stuff */
 static void outline_prep(struct outline* o)
 {
 	/* prep normals */
@@ -111,89 +224,185 @@ static void outline_prep(struct outline* o)
 	const int n_polygons = o->n_polygons;
 	int n_max_edges = 0;
 	for (int i = 0; i < n_polygons; i++) {
-		int offset = o->polygon_lookup[(i<<1)];
-		int n_vertices = o->polygon_lookup[(i<<1)+1];
-		assert(n_vertices >= 3);
+		int offset = o->polygon_lookup[i].offset;
+		int n_polygon_vertices = o->polygon_lookup[i].length;
+		assert(n_polygon_vertices >= 3);
 		union v3 v0 = o->vertices[o->polygon_vertex_indices[offset]];
 		union v3 v1 = o->vertices[o->polygon_vertex_indices[offset+1]];
-		union v3 v2 = o->vertices[o->polygon_vertex_indices[offset+2]];
-		o->polygon_normals[i] = v3_cross_product(v3_sub(v1, v0), v3_sub(v2, v0));
-		n_max_edges += n_vertices;
+		union v3 v2 = o->vertices[o->polygon_vertex_indices[offset+n_polygon_vertices-1]];
+		o->polygon_normals[i] = v3_normalize(v3_cross_product(v3_sub(v1, v0), v3_sub(v2, v0)));
+		n_max_edges += n_polygon_vertices;
+	}
+
+	/* find all edge pairs; sort to eliminate duplicates; remaining are
+	 * unique edges */
+	assert((o->edge_vertex_pairs = calloc(n_max_edges, sizeof(*o->edge_vertex_pairs))) != NULL);
+	int edge_vertex_pair_index = 0;
+	for (int polygon_index = 0; polygon_index < n_polygons; polygon_index++) {
+		int offset = o->polygon_lookup[polygon_index].offset;
+		int n_polygon_vertices = o->polygon_lookup[polygon_index].length;
+
+		int prev = offset + n_polygon_vertices - 1;
+		for (int j = offset; j < (offset+n_polygon_vertices); j++) {
+			int va = o->polygon_vertex_indices[prev];
+			int vb = o->polygon_vertex_indices[j];
+			prev = j;
+
+			/* ensure va < vb (because edge (va,vb) === (vb,va)) */
+			if (va > vb) {
+				int tmp = va;
+				va = vb;
+				vb = tmp;
+			}
+
+			assert(va < vb);
+			assert(edge_vertex_pair_index < n_max_edges);
+			o->edge_vertex_pairs[edge_vertex_pair_index].a = va;
+			o->edge_vertex_pairs[edge_vertex_pair_index].b = vb;
+			edge_vertex_pair_index++;
+
+		}
+	}
+	assert(edge_vertex_pair_index == n_max_edges);
+	qsort(o->edge_vertex_pairs, n_max_edges, sizeof(*o->edge_vertex_pairs), edge_vertex_pair_compar);
+	int n_edges = 0;
+	union ipair* prev = NULL;
+	union ipair* cur = o->edge_vertex_pairs;
+	union ipair* wr = o->edge_vertex_pairs;
+	for (int i = 0; i < n_max_edges; i++) {
+		if (prev == NULL || memcmp(prev, cur, sizeof *cur) != 0) {
+			if (wr != cur) {
+				memcpy(wr, cur, sizeof *cur);
+			}
+			n_edges++;
+			wr++;
+		}
+		prev = cur;
+		cur++;
+	}
+	assert(cur == (o->edge_vertex_pairs + n_max_edges));
+	assert(wr == (o->edge_vertex_pairs + n_edges));
+	o->n_edges = n_edges;
+
+	/* trim edge_vertex_pairs to actual size now we know it */
+	assert((o->edge_vertex_pairs = realloc(o->edge_vertex_pairs, n_edges*sizeof(*o->edge_vertex_pairs))) != NULL);
+
+	/* calculate vertex->edge lookup */
+	assert((o->vertex_edge_lookup = calloc(o->n_vertices, sizeof *o->vertex_edge_lookup)) != NULL);
+	const int n_vertex_edges = 2*n_edges;
+	assert((o->vertex_edges = calloc(n_vertex_edges, sizeof *o->vertex_edges)) != NULL);
+	int vei = 0;
+	/* XXX O(n^2).. or O(n_vertices * n_edges) */
+	for (int i = 0; i < o->n_vertices; i++) {
+		const int vei_start = vei;
+		for (int j = 0; j < n_edges; j++) {
+			for (int k = 0; k < 2; k++) {
+				if (o->edge_vertex_pairs[j].i[k] != i) continue;
+				assert(vei < n_vertex_edges);
+				o->vertex_edges[vei++] = j;
+			}
+		}
+		o->vertex_edge_lookup[i].offset = vei_start;
+		o->vertex_edge_lookup[i].length = vei - vei_start;
+	}
+	assert(vei == n_vertex_edges);
+
+	/* calculate edge->polygon lookup */
+	assert((o->edge_polygon_pairs = calloc(n_edges, sizeof *o->edge_polygon_pairs)) != NULL);
+	for (int i = 0; i < n_edges; i++) {
+		o->edge_polygon_pairs[i].a = -1;
+		o->edge_polygon_pairs[i].b = -1;
+	}
+	/* for all polygons... */
+	for (int polygon_index = 0; polygon_index < n_polygons; polygon_index++) {
+		int polygon_vertex_offset = o->polygon_lookup[polygon_index].offset;
+		int n_polygon_vertices = o->polygon_lookup[polygon_index].length;
+		/* for all vertices in polygon... */
+		for (int j = polygon_vertex_offset; j < (polygon_vertex_offset+n_polygon_vertices); j++) {
+			int vertex_index = o->polygon_vertex_indices[j];
+			int vertex_edge_offset = o->vertex_edge_lookup[vertex_index].offset;
+			int n_vertex_edges = o->vertex_edge_lookup[vertex_index].length;
+			/* for all edges sharing vertex... */
+			for (int k = vertex_edge_offset; k < (vertex_edge_offset+n_vertex_edges); k++) {
+				int edge_index = o->vertex_edges[k];
+				int n_shared_vertices = 0;
+				/* for each vertex in edge.. */
+				for (int l = 0; l < 2; l++) {
+					int edge_vertex_index = o->edge_vertex_pairs[edge_index].i[l];
+					for (int j1 = polygon_vertex_offset; j1 < (polygon_vertex_offset+n_polygon_vertices); j1++) {
+						if (edge_vertex_index == o->polygon_vertex_indices[j1]) {
+							n_shared_vertices++;
+						}
+					}
+				}
+				assert(n_shared_vertices == 1 || n_shared_vertices == 2);
+				if (n_shared_vertices != 2) continue;
+
+				int wrote_polygon_index = 0;
+				for (int l = 0; l < 2; l++) {
+					int* v = &o->edge_polygon_pairs[edge_index].i[l];
+					if (*v == polygon_index) {
+						/* already wrote polygon_index,
+						 * don't do it again */
+						wrote_polygon_index = 1;
+						break;
+					}
+				}
+				if (!wrote_polygon_index) {
+					for (int l = 0; l < 2; l++) {
+						int* v = &o->edge_polygon_pairs[edge_index].i[l];
+						if (*v == -1) {
+							/* free polygon slot */
+							*v = polygon_index;
+							wrote_polygon_index = 1;
+							break;
+						}
+					}
+				}
+				assert(wrote_polygon_index);
+			}
+		}
 	}
 
 	/* temporary stuff */
 	assert((o->polygon_tags = calloc(o->n_polygons, sizeof *o->polygon_tags)) != NULL);
-
-
-	/* find all edge pairs; sort to eliminate duplicates; remaining are
-	 * unique edges */
-	assert((o->edge_vertex_pairs = calloc(n_max_edges, 2*sizeof(*o->edge_vertex_pairs))) != NULL);
-	int evpi = 0;
-	for (int i = 0; i < n_polygons; i++) {
-		int offset = o->polygon_lookup[(i<<1)];
-		int n_vertices = o->polygon_lookup[(i<<1)+1];
-
-		int prev = n_vertices - 1;
-		for (int j = 0; j < n_vertices; j++) {
-			int va = o->polygon_vertex_indices[offset + prev];
-			int vb = o->polygon_vertex_indices[offset + j];
-			prev = j;
-
-			o->edge_vertex_pairs[evpi++] = va;
-			o->edge_vertex_pairs[evpi++] = vb;
-		}
-	}
-	qsort(o->edge_vertex_pairs, n_max_edges, 2*sizeof(*o->edge_vertex_pairs), edge_vertex_pair_compar);
-	int n_edges = 0;
-	int* prev = NULL;
-	int* cur = o->edge_vertex_pairs;
-	int* wr = o->edge_vertex_pairs;
-	for (int i = 0; i < n_max_edges; i++) {
-		const size_t sz = 2*sizeof(int);
-		if (prev == NULL || memcmp(prev, cur, sz) != 0) {
-			if (wr != cur) memcpy(wr, cur, sz);
-			n_edges++;
-			wr += 2;
-		}
-		prev = cur;
-		cur += 2;
-	}
-	o->n_edges = n_edges;
-
-	// TODO int* edge_polygon_pairs;
-	// TODO int* vertex_edge_lookup; // (vertex_edges offset, n) pairs
-	// TODO int* vertex_edges;
 }
 
-static inline int outline__must_draw_edge(struct outline* o, int edge_index)
+static inline int outline__should_draw_edge(struct outline* o, int edge_index)
 {
+	int polygon_a = o->edge_polygon_pairs[edge_index].a;
+	int polygon_b = o->edge_polygon_pairs[edge_index].b;
+
 	int tag_a = 0;
+	if (polygon_a >= 0) tag_a = o->polygon_tags[polygon_a];
+
 	int tag_b = 0;
+	if (polygon_b >= 0) tag_b = o->polygon_tags[polygon_b];
 
-	int polygon_a = o->edge_polygon_pairs[edge_index<<1];
-	int polygon_b = o->edge_polygon_pairs[(edge_index<<1)+1];
-	if (polygon_a >= 0) {
-		tag_a = o->polygon_tags[polygon_a];
-	}
-	if (polygon_b >= 0) {
-		tag_b = o->polygon_tags[polygon_b];
-	}
+	int should_draw = tag_a != tag_b;
 
-	return tag_a != tag_b;
+	return should_draw;
 }
 
-static inline int outline__next_edge(struct outline* o, int edge_index, int direction)
+static inline int outline__next_edge(struct outline* o, int edge_index, int* direction)
 {
-	int v = o->edge_vertex_pairs[(edge_index<<1) + direction];
+	int v = o->edge_vertex_pairs[edge_index].i[*direction];
 
-	int* lookup = &o->vertex_edge_lookup[v<<1];
-	int offset = lookup[0];
-	int n = lookup[1];
+	int offset = o->vertex_edge_lookup[v].offset;
+	int n = o->vertex_edge_lookup[v].length;
 
-	for (int index = offset; index < offset+n; index++) {
+	for (int index = offset; index < (offset+n); index++) {
 		int next_edge_index = o->vertex_edges[index];
 		if (next_edge_index == edge_index) continue;
-		if (outline__must_draw_edge(o, next_edge_index)) return next_edge_index;
+		if (outline__should_draw_edge(o, next_edge_index)) {
+			for (int j = 0; j < 2; j++) {
+				if (o->edge_vertex_pairs[next_edge_index].i[j] != v) {
+					*direction = j;
+					break;
+				}
+			}
+			return next_edge_index;
+		}
 	}
 	return -1;
 }
@@ -202,6 +411,9 @@ static int outline_draw(struct outline* o, NVGcontext* vg, union m33* tx, int dr
 {
 	union v3 view = m33_get_view_v3(tx);
 
+	/* tag visible polygons; they both have to be facing the "camera"
+	 * (according to tx), and the polygon material has to match
+	 * draw_material */
 	const int n_polygons = o->n_polygons;
 	int n_tags = 0;
 	for (int i = 0; i < n_polygons; i++) {
@@ -215,43 +427,118 @@ static int outline_draw(struct outline* o, NVGcontext* vg, union m33* tx, int dr
 
 	if (n_tags == 0) return 0; /* nothing to draw */
 
+	/* find the first edge we have to draw */
 	const int n_edges = o->n_edges;
 	int first_edge_index = -1;
 	int direction = 0; // XXX set? CW/CCW?
-	for (int i = 0; i < n_edges; i++) {
-		if (outline__must_draw_edge(o, i)) {
-			first_edge_index = i;
+	for (int edge_index = 0; edge_index < n_edges; edge_index++) {
+		if (outline__should_draw_edge(o, edge_index)) {
+			first_edge_index = edge_index;
 			break;
 		}
 	}
-
 	assert(first_edge_index > -1);
 
+	/* draw edge loop */
 	int edge_index = first_edge_index;
 	int moveto = 1;
 	nvgBeginPath(vg);
+	int iterations = 0;
 	do {
 		union v3 v;
 		if (moveto) {
-			v = o->vertices[o->edge_vertex_pairs[(edge_index<<1) + (direction^1)]];
+			v = o->vertices[o->edge_vertex_pairs[edge_index].i[direction^1]];
 			v = m33_apply(tx, v);
 			nvgMoveTo(vg, v.x, v.y);
 			moveto = 0;
 		}
 
-		v = o->vertices[o->edge_vertex_pairs[(edge_index<<1) + direction]];
+		v = o->vertices[o->edge_vertex_pairs[edge_index].i[direction]];
 		v = m33_apply(tx, v);
 		nvgLineTo(vg, v.x, v.y);
 
-		edge_index = outline__next_edge(o, first_edge_index, direction);
+		edge_index = outline__next_edge(o, edge_index, &direction);
+		assert(edge_index != -1);
+
+		assert((iterations++) < 10000);
 	} while (edge_index != first_edge_index);
 	nvgClosePath(vg);
 
 	return 1;
 }
 
+static void outline_init_hat(struct outline* o)
+{
+	//const int n_segments = 5;
+	//const int n_strips = 16;
+	const float radius = 100.0f;
+	const int n_segments = 8;
+	const int n_strips = 24;
 
+	memset(o, 0, sizeof *o);
 
+	const int n_vertices = n_segments * n_strips + 1;
+	o->n_vertices = n_vertices;
+	assert((o->vertices = calloc(n_vertices, sizeof *o->vertices)) != NULL);
+
+	const int n_polygons = n_segments * n_strips;
+	o->n_polygons = n_polygons;
+	assert((o->polygon_materials = calloc(n_polygons, sizeof *o->polygon_materials)) != NULL);
+	assert((o->polygon_lookup = calloc(n_polygons, sizeof *o->polygon_lookup)) != NULL);
+
+	const int n_polygon_vertex_indices = (4*(n_segments-1)*n_strips) + 3*n_strips;
+	assert((o->polygon_vertex_indices = calloc(n_polygon_vertex_indices, sizeof *o->polygon_vertex_indices)) != NULL);
+
+	int vi = 0;
+	int pi = 0;
+	int pvi = 0;
+	int segment_offset = 0;
+	for (int i = 0; i < n_segments; i++) {
+		union v3 v;
+		float it = ((float)-i / (float)n_segments) * NVG_PI * 0.5f;
+		float r = cosf(it);
+		v.y = -sinf(it) * radius;
+
+		const int polygon_material = (i == 0) ? 1 : 0;
+		const int is_top = (i == n_segments-1);
+		const int n_polygon_sides = is_top ? 3 : 4;
+
+		int jprev = n_strips-1;
+		for (int j = 0; j < n_strips; j++) {
+			float jphi = ((float)j / (float)n_strips) * NVG_PI * 2.0f;
+
+			// XXX choose different curve maybe?
+			v.x = sinf(jphi) * r * radius;
+			v.z = cosf(jphi) * r * radius;
+
+			assert(vi < n_vertices);
+			o->vertices[vi] = v;
+			vi++;
+
+			assert(pi < n_polygons);
+			o->polygon_materials[pi] = polygon_material;
+			o->polygon_lookup[pi].offset = pvi;
+			o->polygon_lookup[pi].length = n_polygon_sides;
+			pi++;
+
+			int pvi_before = pvi;
+			o->polygon_vertex_indices[pvi++] = jprev + segment_offset;
+			o->polygon_vertex_indices[pvi++] = j + segment_offset;
+			if (is_top) {
+				o->polygon_vertex_indices[pvi++] = n_vertices-1;
+			} else {
+				o->polygon_vertex_indices[pvi++] = j + segment_offset + n_strips;
+				o->polygon_vertex_indices[pvi++] = jprev + segment_offset + n_strips;
+			}
+			assert((pvi - pvi_before) == n_polygon_sides);
+			jprev = j;
+		}
+		segment_offset += n_strips;
+	}
+	o->vertices[vi++] = (union v3){.y = -1};
+
+	outline_prep(o);
+}
 
 struct guy {
 	float eye_r;
@@ -505,6 +792,10 @@ int main(int argc, char** argv)
 	int fullscreen = 0;
 	Uint32 last_ticks = 0;
 
+
+	struct outline outline;
+	outline_init_hat(&outline);
+
 	float x = 0.0f;
 	while (!exiting) {
 		SDL_Event e;
@@ -565,6 +856,31 @@ int main(int argc, char** argv)
 			//nvgStrokeColor(vg, nvgRGBA(0,0,0,255));
 			//nvgStrokeWidth(vg, 1);
 			//nvgStroke(vg);
+			nvgRestore(vg);
+		}
+
+		{
+			union m33 tx;
+			m33_set_rotate(&tx, x, v3_axis_x());
+			nvgSave(vg);
+			nvgTranslate(vg, 1000, 150);
+
+			if (outline_draw(&outline, vg, &tx, 0)) {
+				nvgFillColor(vg, nvgRGBA(100,100,100,255));
+				nvgFill(vg);
+				nvgStrokeColor(vg, nvgRGBA(0,0,0,255));
+				nvgStrokeWidth(vg, 2);
+				nvgStroke(vg);
+			}
+
+			if (outline_draw(&outline, vg, &tx, 1)) {
+				nvgFillColor(vg, nvgRGBA(255,0,0,255));
+				nvgFill(vg);
+				nvgStrokeColor(vg, nvgRGBA(0,0,0,255));
+				nvgStrokeWidth(vg, 2);
+				nvgStroke(vg);
+			}
+
 			nvgRestore(vg);
 		}
 
