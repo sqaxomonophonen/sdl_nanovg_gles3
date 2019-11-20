@@ -178,9 +178,19 @@ void m33_multiply_inplace(union m33* dst, union m33* m)
 
 union ipair {
 	struct { int a,b; };
-	struct { int offset,length; };
+	struct { int left, right; };
+	struct { int offset, length; };
 	int i[2];
 };
+
+static inline void ipair_lookup(const int** out_begin, const int** out_end, union ipair* ipairs, int index, int* xs)
+{
+	const union ipair lu = ipairs[index];
+	int* begin = &xs[lu.offset];
+	int* end = begin + lu.length;
+	if (out_begin) *out_begin = begin;
+	if (out_end) *out_end = end;
+}
 
 struct outline {
 	// specified
@@ -201,7 +211,8 @@ struct outline {
 	int* vertex_edges;
 
 	// temporary
-	int* polygon_tags;
+	int* polygon_flags;
+	int* edge_flags;
 };
 
 static int edge_vertex_pair_compar(const void* vx, const void* vy)
@@ -310,101 +321,99 @@ static void outline_prep(struct outline* o)
 	/* calculate edge->polygon lookup */
 	assert((o->edge_polygon_pairs = calloc(n_edges, sizeof *o->edge_polygon_pairs)) != NULL);
 	for (int i = 0; i < n_edges; i++) {
-		o->edge_polygon_pairs[i].a = -1;
-		o->edge_polygon_pairs[i].b = -1;
+		o->edge_polygon_pairs[i].left = -1;
+		o->edge_polygon_pairs[i].right = -1;
 	}
-	/* for all polygons... */
+	/* for each polygon... */
 	for (int polygon_index = 0; polygon_index < n_polygons; polygon_index++) {
-		int polygon_vertex_offset = o->polygon_lookup[polygon_index].offset;
-		int n_polygon_vertices = o->polygon_lookup[polygon_index].length;
-		/* for all vertices in polygon... */
-		for (int j = polygon_vertex_offset; j < (polygon_vertex_offset+n_polygon_vertices); j++) {
-			int vertex_index = o->polygon_vertex_indices[j];
-			int vertex_edge_offset = o->vertex_edge_lookup[vertex_index].offset;
-			int n_vertex_edges = o->vertex_edge_lookup[vertex_index].length;
-			/* for all edges sharing vertex... */
-			for (int k = vertex_edge_offset; k < (vertex_edge_offset+n_vertex_edges); k++) {
-				int edge_index = o->vertex_edges[k];
-				int n_shared_vertices = 0;
-				/* for each vertex in edge.. */
-				for (int l = 0; l < 2; l++) {
-					int edge_vertex_index = o->edge_vertex_pairs[edge_index].i[l];
-					for (int j1 = polygon_vertex_offset; j1 < (polygon_vertex_offset+n_polygon_vertices); j1++) {
-						if (edge_vertex_index == o->polygon_vertex_indices[j1]) {
-							n_shared_vertices++;
-						}
-					}
-				}
-				assert(n_shared_vertices == 1 || n_shared_vertices == 2);
-				if (n_shared_vertices != 2) continue;
+		const int *pvi_begin, *pvi_end;
+		ipair_lookup(&pvi_begin, &pvi_end, o->polygon_lookup, polygon_index, o->polygon_vertex_indices);
 
-				int wrote_polygon_index = 0;
-				for (int l = 0; l < 2; l++) {
-					int* v = &o->edge_polygon_pairs[edge_index].i[l];
-					if (*v == polygon_index) {
-						/* already wrote polygon_index,
-						 * don't do it again */
-						wrote_polygon_index = 1;
-						break;
+		const int* pvi1 = pvi_end-1;
+		/* for each polygon edge / vertex pair... */
+		for (const int* pvi2 = pvi_begin; pvi2 < pvi_end; pvi2++) {
+			/* find matching edge... */
+			const int *ve_begin, *ve_end;
+			ipair_lookup(&ve_begin, &ve_end, o->vertex_edge_lookup, *pvi1, o->vertex_edges);
+			for (const int* vei = ve_begin; vei < ve_end; vei++) {
+				union ipair* evps = &o->edge_vertex_pairs[*vei];
+				int pvi1_found_at = -1;
+				int pvi2_found_at = -1;
+				for (int j = 0; j < 2; j++) {
+					int edge_vertex_index = evps->i[j];
+					if (edge_vertex_index == *pvi1) {
+						pvi1_found_at = j;
+					} else if (edge_vertex_index == *pvi2) {
+						pvi2_found_at = j;
 					}
 				}
-				if (!wrote_polygon_index) {
-					for (int l = 0; l < 2; l++) {
-						int* v = &o->edge_polygon_pairs[edge_index].i[l];
-						if (*v == -1) {
-							/* free polygon slot */
-							*v = polygon_index;
-							wrote_polygon_index = 1;
-							break;
-						}
-					}
+				assert(pvi1_found_at != -1 || pvi2_found_at != 1);
+				if (pvi1_found_at == -1 || pvi2_found_at == -1) continue;
+
+				/* edge matches; write polygon index on proper
+				 * side of edge */
+				union ipair* epp = &o->edge_polygon_pairs[*vei];
+				if (pvi2_found_at > pvi1_found_at) {
+					assert(epp->right == -1);
+					epp->right = polygon_index;
+				} else {
+					assert(epp->left == -1);
+					epp->left = polygon_index;
 				}
-				assert(wrote_polygon_index);
 			}
+
+			pvi1 = pvi2;
 		}
 	}
 
 	/* temporary stuff */
-	assert((o->polygon_tags = calloc(o->n_polygons, sizeof *o->polygon_tags)) != NULL);
+	assert((o->polygon_flags = calloc(o->n_polygons, sizeof *o->polygon_flags)) != NULL);
+	assert((o->edge_flags = calloc(o->n_edges, sizeof *o->edge_flags)) != NULL);
 }
 
-static inline int outline__should_draw_edge(struct outline* o, int edge_index)
+#define DRAW (1<<0)
+#define REVERSE (1<<1)
+#define VISITED (1<<2)
+
+
+static inline int outline__get_edge_vertex_index(struct outline* o, int edge_index, int vertex_index)
 {
-	int polygon_a = o->edge_polygon_pairs[edge_index].a;
-	int polygon_b = o->edge_polygon_pairs[edge_index].b;
-
-	int tag_a = 0;
-	if (polygon_a >= 0) tag_a = o->polygon_tags[polygon_a];
-
-	int tag_b = 0;
-	if (polygon_b >= 0) tag_b = o->polygon_tags[polygon_b];
-
-	int should_draw = tag_a != tag_b;
-
-	return should_draw;
+	return o->edge_vertex_pairs[edge_index].i[vertex_index ^ (o->edge_flags[edge_index] & REVERSE ? 1 : 0)];
 }
 
-static inline int outline__next_edge(struct outline* o, int edge_index, int* direction)
+static inline union v3 outline__get_edge_vertex(struct outline* o, union m33* tx, int edge_index, int vertex_index)
 {
-	int v = o->edge_vertex_pairs[edge_index].i[*direction];
+	union v3 v = o->vertices[outline__get_edge_vertex_index(o, edge_index, vertex_index)];
+	v = m33_apply(tx, v);
+	return v;
+}
 
-	int offset = o->vertex_edge_lookup[v].offset;
-	int n = o->vertex_edge_lookup[v].length;
+int XXX_TODO_RESOLVE_MULTIPLE_EXITS = 0;
+static inline int outline__follow(struct outline* o, int edge_index)
+{
+	int vi = outline__get_edge_vertex_index(o, edge_index, 1);
 
-	for (int index = offset; index < (offset+n); index++) {
-		int next_edge_index = o->vertex_edges[index];
-		if (next_edge_index == edge_index) continue;
-		if (outline__should_draw_edge(o, next_edge_index)) {
-			for (int j = 0; j < 2; j++) {
-				if (o->edge_vertex_pairs[next_edge_index].i[j] != v) {
-					*direction = j;
-					break;
-				}
-			}
-			return next_edge_index;
-		}
+	const int *ve_begin, *ve_end;
+	ipair_lookup(&ve_begin, &ve_end, o->vertex_edge_lookup, vi, o->vertex_edges);
+	int n_exits_found = 0;
+	int found_edge;
+	for (const int* vei = ve_begin; vei < ve_end; vei++) {
+		if (*vei == edge_index) continue;
+		if ((o->edge_flags[*vei] & DRAW) == 0) continue;
+		n_exits_found++;
+		found_edge = *vei;
 	}
-	return -1;
+
+	assert(n_exits_found > 0);
+
+	if (n_exits_found == 1) {
+		return found_edge;
+	} else {
+		XXX_TODO_RESOLVE_MULTIPLE_EXITS = 1;
+		assert(0);
+		// TODO
+		return -1;
+	}
 }
 
 static int outline_draw(struct outline* o, NVGcontext* vg, union m33* tx, int draw_material)
@@ -417,63 +426,82 @@ static int outline_draw(struct outline* o, NVGcontext* vg, union m33* tx, int dr
 	const int n_polygons = o->n_polygons;
 	int n_tags = 0;
 	for (int i = 0; i < n_polygons; i++) {
-		int tag = 0;
+		int flags = 0;
 		if (o->polygon_materials[i] == draw_material) {
-			tag = v3_dot(view, o->polygon_normals[i]) > 0.0f;
-			if (tag) n_tags++;
+			if (v3_dot(view, o->polygon_normals[i]) > 0.0f) {
+				flags |= DRAW;
+				n_tags++;
+			}
 		}
-		o->polygon_tags[i] = tag;
+		o->polygon_flags[i] = flags;
 	}
 
 	if (n_tags == 0) return 0; /* nothing to draw */
 
-	/* find the first edge we have to draw */
 	const int n_edges = o->n_edges;
-	int first_edge_index = -1;
-	int direction = 0; // XXX set? CW/CCW?
-	for (int edge_index = 0; edge_index < n_edges; edge_index++) {
-		if (outline__should_draw_edge(o, edge_index)) {
-			first_edge_index = edge_index;
-			break;
+	n_tags = 0;
+	for (int i = 0; i < n_edges; i++) {
+		union ipair epp = o->edge_polygon_pairs[i];
+
+		int draw_left = epp.left != -1 && (o->polygon_flags[epp.left] & DRAW);
+		int draw_right = epp.right != -1 && (o->polygon_flags[epp.right] & DRAW);
+		int flags = 0;
+		if (draw_left != draw_right) {
+			flags |= DRAW;
+			if (draw_left) flags |= REVERSE;
+			n_tags++;
 		}
+		o->edge_flags[i] = flags;
 	}
-	assert(first_edge_index > -1);
+	assert(n_tags > 0);
 
-	/* draw edge loop */
-	int edge_index = first_edge_index;
-	int moveto = 1;
 	nvgBeginPath(vg);
-	int iterations = 0;
-	do {
-		union v3 v;
-		if (moveto) {
-			v = o->vertices[o->edge_vertex_pairs[edge_index].i[direction^1]];
-			v = m33_apply(tx, v);
-			nvgMoveTo(vg, v.x, v.y);
-			moveto = 0;
+
+	int n_islands = 0;
+	for (int i = 0; i < n_edges; i++) {
+		{
+			int f = o->edge_flags[i];
+			if ((f & DRAW) == 0) continue;
+			if (f & VISITED) continue;
 		}
 
-		v = o->vertices[o->edge_vertex_pairs[edge_index].i[direction]];
-		v = m33_apply(tx, v);
-		nvgLineTo(vg, v.x, v.y);
+		float area = 0.0f;
+		const int first_edge_index = i;
+		int edge_index = first_edge_index;
+		union v3 prev_vertex = outline__get_edge_vertex(o, tx, edge_index, 0);
+		nvgMoveTo(vg, prev_vertex.x, prev_vertex.y);
+		do {
+			int* edge_flags = &o->edge_flags[edge_index];
+			assert((*edge_flags & VISITED) == 0);
+			*edge_flags |= VISITED;
 
-		edge_index = outline__next_edge(o, edge_index, &direction);
-		assert(edge_index != -1);
+			union v3 vertex = outline__get_edge_vertex(o, tx, edge_index, 1);
+			nvgLineTo(vg, vertex.x, vertex.y);
 
-		assert((iterations++) < 10000);
-	} while (edge_index != first_edge_index);
-	nvgClosePath(vg);
+			area += (vertex.x - prev_vertex.x) * (vertex.y + prev_vertex.y);
+			prev_vertex = vertex;
+
+			edge_index = outline__follow(o, edge_index);
+			if (edge_index == -1) {
+				// XXX shouldn't happen
+				return 0;
+			}
+		} while (edge_index != first_edge_index);
+
+		nvgClosePath(vg);
+		nvgPathWinding(vg, area > 0 ? NVG_CW : NVG_CCW);
+
+		n_islands++;
+	}
 
 	return 1;
 }
 
 static void outline_init_hat(struct outline* o)
 {
-	//const int n_segments = 5;
-	//const int n_strips = 16;
 	const float radius = 100.0f;
-	const int n_segments = 8;
-	const int n_strips = 24;
+	const int n_segments = 12;
+	const int n_strips = 32;
 
 	memset(o, 0, sizeof *o);
 
@@ -499,7 +527,7 @@ static void outline_init_hat(struct outline* o)
 		float r = cosf(it);
 		v.y = -sinf(it) * radius;
 
-		const int polygon_material = (i == 0) ? 1 : 0;
+		const int polygon_material = (i == 1 || i == 4 || i > 6) ? 1 : 0;
 		const int is_top = (i == n_segments-1);
 		const int n_polygon_sides = is_top ? 3 : 4;
 
@@ -535,7 +563,8 @@ static void outline_init_hat(struct outline* o)
 		}
 		segment_offset += n_strips;
 	}
-	o->vertices[vi++] = (union v3){.y = -1};
+
+	o->vertices[vi++] = (union v3){.y = radius};
 
 	outline_prep(o);
 }
@@ -865,6 +894,7 @@ int main(int argc, char** argv)
 			nvgSave(vg);
 			nvgTranslate(vg, 1000, 150);
 
+			XXX_TODO_RESOLVE_MULTIPLE_EXITS = 0;
 			if (outline_draw(&outline, vg, &tx, 0)) {
 				nvgFillColor(vg, nvgRGBA(100,100,100,255));
 				nvgFill(vg);
@@ -879,6 +909,13 @@ int main(int argc, char** argv)
 				nvgStrokeColor(vg, nvgRGBA(0,0,0,255));
 				nvgStrokeWidth(vg, 2);
 				nvgStroke(vg);
+			}
+
+			if (XXX_TODO_RESOLVE_MULTIPLE_EXITS) {
+				nvgBeginPath(vg);
+				nvgRect(vg,200,200,50,50);
+				nvgFillColor(vg, nvgRGBA(255,0,0,255));
+				nvgFill(vg);
 			}
 
 			nvgRestore(vg);
