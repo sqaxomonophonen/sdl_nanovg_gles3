@@ -482,10 +482,6 @@ static int outline_draw(struct outline* o, NVGcontext* vg, union m33* tx, int dr
 			prev_vertex = vertex;
 
 			edge_index = outline__follow(o, edge_index);
-			if (edge_index == -1) {
-				// XXX shouldn't happen
-				return 0;
-			}
 		} while (edge_index != first_edge_index);
 
 		nvgClosePath(vg);
